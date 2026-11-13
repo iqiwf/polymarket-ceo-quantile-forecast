@@ -15,7 +15,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ALPHA, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
+import { ALPHA, LOW_PRICE_REL, LOW_PRICE_SCALE, LOW_PRICE_THRESHOLD, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -89,7 +89,12 @@ function quantilesFor(m: CaseMarket, sigma: number, horizon: number): number[][]
  * with too little history borrows the case's cross-sectional estimate instead.
  */
 function marketVolatility(prices: number[], own: number, pooled: number): number {
-  const base = prices.length < MIN_HISTORY || !Number.isFinite(own) || own <= 0 ? pooled * SHORT_HISTORY_SCALE : own;
+  let base = prices.length < MIN_HISTORY || !Number.isFinite(own) || own <= 0 ? pooled * SHORT_HISTORY_SCALE : own;
+  const x = prices.length ? prices[prices.length - 1] : 0.5;
+  if (x < LOW_PRICE_THRESHOLD) {
+    base *= LOW_PRICE_SCALE;
+    if (LOW_PRICE_REL > 0) base = Math.min(base, LOW_PRICE_REL * x);
+  }
   if (VOL_RATIO_GAMMA <= 0) return base;
   const fast = madSigma(prices, 60);
   if (!Number.isFinite(fast) || fast <= 0 || base <= 0) return base;
