@@ -1,4 +1,5 @@
 // Tuned constants for main.ts, fitted on the practice cases.
+// Selection: coordinate descent over the five rolling practice windows, 104 market-windows.
 
 export const VOL_WINDOW = 1200;
 export const SIGMA_MULT = 1.0;
@@ -8,4 +9,6 @@ export const SHORT_HISTORY_SCALE = 1.0;
 export const MIN_HISTORY = 60;
 export const DF = 3;
 export const POOL_Q = 50;
+export const VOL_RATIO_GAMMA = 1.0;
+export const VOL_RATIO_CAP = 2.0;
 export const T_RAW = [-1.358715, -0.441611, 0.0, 0.441611, 1.358715];

@@ -15,7 +15,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ALPHA, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_WINDOW } from './params.ts';
+import { ALPHA, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -83,6 +83,20 @@ function quantilesFor(m: CaseMarket, sigma: number, horizon: number): number[][]
   return rows;
 }
 
+/**
+ * The per-market volatility fed to the quantiles: a long-window MAD estimate, widened
+ * or narrowed by how fast the last hour is moving relative to that baseline. A market
+ * with too little history borrows the case's cross-sectional estimate instead.
+ */
+function marketVolatility(prices: number[], own: number, pooled: number): number {
+  const base = prices.length < MIN_HISTORY || !Number.isFinite(own) || own <= 0 ? pooled * SHORT_HISTORY_SCALE : own;
+  if (VOL_RATIO_GAMMA <= 0) return base;
+  const fast = madSigma(prices, 60);
+  if (!Number.isFinite(fast) || fast <= 0 || base <= 0) return base;
+  const ratio = Math.min(VOL_RATIO_CAP, Math.max(1 / VOL_RATIO_CAP, fast / base));
+  return base * Math.pow(ratio, VOL_RATIO_GAMMA);
+}
+
 function main(): void {
   mkdirSync(OUTPUT_DIR, { recursive: true });
   const files = readdirSync(INPUT_DIR)
@@ -100,11 +114,10 @@ function main(): void {
     const usable = own.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
     const rank = usable.length ? Math.min(usable.length - 1, Math.floor((POOL_Q / 100) * usable.length)) : -1;
     const pooled = rank >= 0 ? usable[rank] : SIGMA_FALLBACK;
-    const forecasts = c.markets.map((m, i) => {
-      const shortHistory = m.prices.length < MIN_HISTORY;
-      const sigma = shortHistory || !Number.isFinite(own[i]) || own[i] <= 0 ? pooled * SHORT_HISTORY_SCALE : (own[i] as number);
-      return { id: m.id, q: quantilesFor(m, sigma, c.horizon_minutes) };
-    });
+    const forecasts = c.markets.map((m, i) => ({
+      id: m.id,
+      q: quantilesFor(m, marketVolatility(m.prices, own[i], pooled), c.horizon_minutes),
+    }));
     writeFileSync(join(OUTPUT_DIR, `${id}.out`), `${JSON.stringify({ forecasts })}\n`);
   }
 }
