@@ -15,7 +15,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ALPHA, ANCHOR_WEIGHT, ANCHOR_WINDOW, KAPPA_SUM, LOW_PRICE_REL, LOW_PRICE_SCALE, LOW_PRICE_THRESHOLD, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
+import { ALPHA, ANCHOR_WEIGHT, ANCHOR_WINDOW, ESTIMATOR, KAPPA_SUM, LOW_PRICE_REL, LOW_PRICE_SCALE, LOW_PRICE_THRESHOLD, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -53,6 +53,37 @@ function madSigma(prices: number[], window: number): number {
   const med = median(d);
   for (let i = 0; i < d.length; i++) d[i] = Math.abs(d[i] - med);
   return 1.4826 * median(d);
+}
+
+/**
+ * Robust volatility of the minute changes over `window` minutes.
+ *
+ * The MAD of the changes is zero for most of these markets: more than half the minutes carry
+ * no change at all, so half the deviations are exactly zero. That makes the MAD a poor scale,
+ * and the estimator falls back to order statistics of the absolute changes, which are not
+ * degenerate for a market that ticks even occasionally.
+ */
+function priceSigma(prices: number[], window: number): number {
+  const n = prices.length;
+  const start = Math.max(1, n - window);
+  const d: number[] = [];
+  for (let i = start; i < n; i++) d.push(prices[i] - prices[i - 1]);
+  if (d.length < 20) return NaN;
+  if (ESTIMATOR === 'mad') return madSigma(prices, window);
+  const abs = d.map(Math.abs).sort((a, b) => a - b);
+  if (ESTIMATOR === 'meanabs') {
+    let sum = 0;
+    for (const v of abs) sum += v;
+    return sum / abs.length / 0.797885;
+  }
+  if (ESTIMATOR === 'rms') {
+    let sum = 0;
+    for (const v of abs) sum += v * v;
+    return Math.sqrt(sum / abs.length);
+  }
+  // q90: the 90th percentile of |change|, scaled to a normal standard deviation
+  const k = Math.min(abs.length - 1, Math.floor(0.9 * abs.length));
+  return abs[k] / 1.644854;
 }
 
 function median(a: number[]): number {
@@ -109,7 +140,7 @@ function marketVolatility(prices: number[], own: number, pooled: number): number
     if (LOW_PRICE_REL > 0) base = Math.min(base, LOW_PRICE_REL * x);
   }
   if (VOL_RATIO_GAMMA <= 0) return base;
-  const fast = madSigma(prices, 60);
+  const fast = priceSigma(prices, 60);
   if (!Number.isFinite(fast) || fast <= 0 || base <= 0) return base;
   const ratio = Math.min(VOL_RATIO_CAP, Math.max(1 / VOL_RATIO_CAP, fast / base));
   return base * Math.pow(ratio, VOL_RATIO_GAMMA);
@@ -128,7 +159,7 @@ function main(): void {
       throw new Error(`${file}: unexpected quantile levels ${JSON.stringify(c.quantiles)}`);
     }
     // First pass: each market's own volatility; the median of those is the pooled value.
-    const own = c.markets.map((m) => madSigma(m.prices, VOL_WINDOW));
+    const own = c.markets.map((m) => priceSigma(m.prices, VOL_WINDOW));
     const usable = own.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
     const rank = usable.length ? Math.min(usable.length - 1, Math.floor((POOL_Q / 100) * usable.length)) : -1;
     const pooled = rank >= 0 ? usable[rank] : SIGMA_FALLBACK;
