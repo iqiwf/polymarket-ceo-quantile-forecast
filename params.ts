@@ -19,4 +19,7 @@ export const VOL_RATIO_CAP = 2.0;
 export const LOW_PRICE_THRESHOLD = 0.05;
 export const LOW_PRICE_SCALE = 1.0;
 export const LOW_PRICE_REL = 0.04;
+export const ANCHOR_WEIGHT = 0.3;
+export const ANCHOR_WINDOW = 3;
+export const KAPPA_SUM = 0.5;
 export const T_RAW = [-1.358715, -0.441611, 0.0, 0.441611, 1.358715];

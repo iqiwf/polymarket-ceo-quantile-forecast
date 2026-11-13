@@ -15,7 +15,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ALPHA, LOW_PRICE_REL, LOW_PRICE_SCALE, LOW_PRICE_THRESHOLD, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
+import { ALPHA, ANCHOR_WEIGHT, ANCHOR_WINDOW, KAPPA_SUM, LOW_PRICE_REL, LOW_PRICE_SCALE, LOW_PRICE_THRESHOLD, MIN_HISTORY, MULT, POOL_Q, SHORT_HISTORY_SCALE, SIGMA_MULT, T_RAW, VOL_RATIO_CAP, VOL_RATIO_GAMMA, VOL_WINDOW } from './params.ts';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -61,9 +61,7 @@ function median(a: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-function quantilesFor(m: CaseMarket, sigma: number, horizon: number): number[][] {
-  const n = m.prices.length;
-  const x = n ? m.prices[n - 1] : 0.5;
+function quantilesFor(m: CaseMarket, sigma: number, horizon: number, anchor: number): number[][] {
   const rows: number[][] = new Array(horizon);
   const s = Math.max(SIGMA_FLOOR, sigma * SIGMA_MULT);
   for (let h = 1; h <= horizon; h++) {
@@ -72,7 +70,7 @@ function quantilesFor(m: CaseMarket, sigma: number, horizon: number): number[][]
     let prev = 0;
     for (let j = 0; j < 5; j++) {
       const z = T_RAW[j] * MULT[j];
-      const raw = x + z * width;
+      const raw = anchor + z * width;
       const rounded = Math.round(Math.min(1, Math.max(0, raw)) * 1e6) / 1e6 + 0;
       const q = rounded < prev ? prev : rounded;
       prev = q;
@@ -81,6 +79,21 @@ function quantilesFor(m: CaseMarket, sigma: number, horizon: number): number[][]
     rows[h - 1] = row;
   }
   return rows;
+}
+
+/**
+ * The price the horizon widens around. The last minute is a single noisy observation of the
+ * order book's midpoint, so it is blended with the median of the last few minutes, and the
+ * case's whole market set is used as a constraint: the 24 outcomes are exclusive, so a sum
+ * above 1 implies prices that must come down on average, and below 1 the opposite.
+ */
+function anchorFor(m: CaseMarket, caseTotal: number): number {
+  const p = m.prices;
+  const x = p.length ? p[p.length - 1] : 0.5;
+  const tail = p.length >= ANCHOR_WINDOW ? p.slice(p.length - ANCHOR_WINDOW) : p;
+  const smoothed = ANCHOR_WEIGHT > 0 && tail.length ? x * (1 - ANCHOR_WEIGHT) + median(tail) * ANCHOR_WEIGHT : x;
+  const reversion = caseTotal > 0 ? KAPPA_SUM * (x / caseTotal - x) : 0;
+  return smoothed + reversion;
 }
 
 /**
@@ -119,9 +132,11 @@ function main(): void {
     const usable = own.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
     const rank = usable.length ? Math.min(usable.length - 1, Math.floor((POOL_Q / 100) * usable.length)) : -1;
     const pooled = rank >= 0 ? usable[rank] : SIGMA_FALLBACK;
+    let caseTotal = 0;
+    for (const m of c.markets) if (m.prices.length) caseTotal += m.prices[m.prices.length - 1];
     const forecasts = c.markets.map((m, i) => ({
       id: m.id,
-      q: quantilesFor(m, marketVolatility(m.prices, own[i], pooled), c.horizon_minutes),
+      q: quantilesFor(m, marketVolatility(m.prices, own[i], pooled), c.horizon_minutes, anchorFor(m, caseTotal)),
     }));
     writeFileSync(join(OUTPUT_DIR, `${id}.out`), `${JSON.stringify({ forecasts })}\n`);
   }
